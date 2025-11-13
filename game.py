@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
 import pygame
@@ -15,8 +15,8 @@ GRID_ROWS = 5
 GRID_COLS = 9
 CELL = 90
 MARGIN = 40
-WIDTH = GRID_COLS * CELL + MARGIN * 2
-HEIGHT = GRID_ROWS * CELL + MARGIN * 2
+WIDTH = GRID_COLS * CELL + MARGIN * 2 #1700
+HEIGHT = GRID_ROWS * CELL + MARGIN * 2 #980
 FPS = 120
 
 TREASURES_PER_ROUND = 1
@@ -40,6 +40,8 @@ OBSTACLE_C = (120, 160, 200)
 
 MAP_FOLDER = "maps"  # folder where pre-made maps are stored
 
+
+
 # ---------------------------
 # Helpers
 # ---------------------------
@@ -56,6 +58,7 @@ def length(vx, vy):
 class Treasure:
     row: int
     col: int
+    r: int = 8  
     carried_by: int | None = None
     def pos(self):
         return grid_to_px(self.row, self.col)
@@ -64,7 +67,6 @@ class Treasure:
 class Base:
     owner: int
     rect: pygame.Rect
-
 
 class Coin:
     def __init__(self, x, y, color):
@@ -76,10 +78,14 @@ class Coin:
         self.carrying: Treasure | None = None
         self.resting = True
 
+        
+
     def draw(self, surf):
-        pygame.draw.circle(surf, self.color, (int(self.x), int(self.y)), self.r)
-        if self.carrying:
-            pygame.draw.circle(surf, (255,255,255), (int(self.x), int(self.y)), self.r+3, 2)
+        img = self.red_img if self.color == P1_COLOR else self.blue_img
+        rect = img.get_rect(center=(int(self.x), int(self.y)))
+        surf.blit(img, rect)
+
+
 
     def update(self, obstacles):
         if abs(self.vx) < MIN_SPEED and abs(self.vy) < MIN_SPEED:
@@ -119,6 +125,49 @@ class Coin:
                 else:
                     self.y = rect.bottom + self.r; self.vy *= -0.7
 
+# Item Class
+@dataclass
+class item_ExtraTurn:
+    row: int
+    col: int
+    carried_by: int | None = None
+
+    def pos(self):
+        return grid_to_px(self.row, self.col)
+
+    def draw(self, surf):
+        x, y = self.pos()
+        pygame.draw.circle(surf, (0, 255, 0), (int(x), int(y)), 8)  # Green item
+        pygame.draw.circle(surf, (0, 200, 0), (int(x), int(y)), 8, 2)  # Outline
+
+@dataclass
+class item_StopCoin:
+    row: int
+    col: int
+    carried_by: int | None = None
+
+    def pos(self):
+        return grid_to_px(self.row, self.col)
+
+    def draw(self, surf):
+        x, y = self.pos()
+        pygame.draw.circle(surf, (255, 0, 186), (int(x), int(y)), 8)  # Green item
+        pygame.draw.circle(surf, (164, 4, 121), (int(x), int(y)), 8, 2)  # Outline
+
+@dataclass
+class item_ReDirect:
+    row: int
+    col: int
+    carried_by: int | None = None
+
+    def pos(self):
+        return grid_to_px(self.row, self.col)
+
+    def draw(self, surf):
+        x, y = self.pos()
+        pygame.draw.circle(surf, (0, 255, 251), (int(x), int(y)), 8)  # Green item
+        pygame.draw.circle(surf, (0, 154, 152), (int(x), int(y)), 8, 2)  # Outline
+
 # ---------------------------
 # Game
 # ---------------------------
@@ -131,6 +180,14 @@ class Game:
         self.font = pygame.font.SysFont("arial", 22)
         self.bigfont = pygame.font.SysFont("arial", 36, bold=True)
 
+        self.bg_img = pygame.image.load("assets/background.png").convert()
+        self.bg_img = pygame.transform.scale(self.bg_img, (WIDTH, HEIGHT))
+
+        self.coin_red_img = pygame.image.load("assets/coin_red.png").convert_alpha()
+        self.coin_blue_img = pygame.image.load("assets/coin_blue.png").convert_alpha()
+        self.treasure_img = pygame.image.load("assets/treasure.png").convert_alpha()
+        #self.wall_img = pygame.image.load("assets/wall.png").convert_alpha()
+
         base_h = 3 * CELL
         base_y = MARGIN + (GRID_ROWS * CELL - base_h)//2
         left_rect = pygame.Rect(MARGIN, base_y, CELL, base_h)
@@ -140,6 +197,11 @@ class Game:
         p1_start = (MARGIN + 20, HEIGHT // 2)
         p2_start = (WIDTH - MARGIN - 20, HEIGHT // 2)
         self.coins = [Coin(*p1_start, P1_COLOR), Coin(*p2_start, P2_COLOR)]
+        
+        for c in self.coins:
+            c.red_img = self.coin_red_img
+            c.blue_img = self.coin_blue_img
+
 
         self.match_wins = [0, 0]
         self.turn = 0
@@ -150,12 +212,19 @@ class Game:
         self.treasures: list[Treasure] = []
         self.match_over = False
         self.message = "Flip: P1 starts!"
+        self.randomDirect = True
 
         # Initialize first map
         self.obstacles = self.load_random_map()
 
-        self.start_round(starting_player=0)
+        # Spawn item
+        self.item_Extraturn = None
+        self.item_StopCoin = None
+        self.item_ReDirect = None
+        
+        
 
+        self.start_round(starting_player=0)
 
     # ---------------------------
     def load_random_map(self):
@@ -186,18 +255,126 @@ class Game:
             y = MARGIN + CELL // 2
             rects.append(pygame.Rect(x, y, 16, CELL * 3))
         rects.append(pygame.Rect(WIDTH // 2 - 80, HEIGHT // 2 - 10, 160, 20))
+
         return rects
 
-    # ---------------------------
+    
+
     def _cell_center_blocked(self, r, c):
         x, y = grid_to_px(r, c)
         return any(rect.collidepoint(x, y) for rect in self.obstacles)
 
+    # Item---------------------------------------
+
+
+    def spawn_item_Extraturn(self):
+        green_area = [(r, c) for r in range(0, 5) for c in range(2, 7)]
+        green_area = [(r, c) for (r, c) in green_area if not self._cell_center_blocked(r, c)]
+        if not green_area:
+            return
+
+        max_attempts = 100  # safety guard to avoid infinite loop
+        attempts = 0
+        while attempts < max_attempts:
+            attempts += 1
+            r, c = random.choice(green_area)
+            x, y = grid_to_px(r, c)
+
+            # --- Check 1: overlap with treasures ---
+            too_close_to_treasure = any(
+                length(x - t.pos()[0], y - t.pos()[1]) <= (t.r + 16) for t in self.treasures
+            )
+
+            # --- Check 2: overlap with StopCoin item ---
+            too_close_to_stop = (
+                self.item_StopCoin and length(x - self.item_StopCoin.pos()[0], y - self.item_StopCoin.pos()[1]) <= 16
+            )
+
+            # --- Check 3: overlap with ReDirect item ---
+            too_close_to_stop = (
+                self.item_ReDirect and length(x - self.item_ReDirect.pos()[0], y - self.item_ReDirect.pos()[1]) <= 16
+            )
+
+            # If everything passes, spawn the item
+            if not (too_close_to_treasure):
+                self.item_Extraturn = item_ExtraTurn(r, c)
+                return
+
+    def spawn_item_StopCoin(self):
+        
+        green_area = [(r, c) for r in range(0, 5) for c in range(2, 7)]
+        green_area = [(r, c) for (r, c) in green_area if not self._cell_center_blocked(r, c)]
+        if not green_area:
+            return
+
+        max_attempts = 100  # safety guard to avoid infinite loop
+        attempts = 0
+        while attempts < max_attempts:
+            attempts += 1
+            r, c = random.choice(green_area)
+            x, y = grid_to_px(r, c)
+
+            # --- Check 1: overlap with treasures ---
+            too_close_to_treasure = any(
+                length(x - t.pos()[0], y - t.pos()[1]) <= (t.r + 16) for t in self.treasures
+            )
+
+            # --- Check 2: overlap with ExtraTurn item ---
+            too_close_to_extra = (
+                self.item_Extraturn and length(x - self.item_Extraturn.pos()[0], y - self.item_Extraturn.pos()[1]) <= 16
+            )
+
+            # --- Check 3: overlap with ReDirect item ---
+            too_close_to_stop = (
+                self.item_ReDirect and length(x - self.item_ReDirect.pos()[0], y - self.item_ReDirect.pos()[1]) <= 16
+            )
+
+            # If everything passes, spawn the item
+            if not (too_close_to_treasure or too_close_to_extra):
+                self.item_StopCoin = item_StopCoin(r, c)
+                return
+
+    def spawn_item_ReDirect(self):
+        """Spawn item_ReDirect in green area, ensuring it doesn't overlap with treasures or other items."""
+        green_area = [(r, c) for r in range(0, 5) for c in range(2, 7)]
+        green_area = [(r, c) for (r, c) in green_area if not self._cell_center_blocked(r, c)]
+        if not green_area:
+            return
+
+        max_attempts = 100  # safety guard to avoid infinite loop
+        attempts = 0
+        while attempts < max_attempts:
+            attempts += 1
+            r, c = random.choice(green_area)
+            x, y = grid_to_px(r, c)
+
+            # --- Check 1: overlap with treasures ---
+            too_close_to_treasure = any(
+                length(x - t.pos()[0], y - t.pos()[1]) <= (t.r + 16) for t in self.treasures
+            )
+
+            # --- Check 2: overlap with ExtraTurn item ---
+            too_close_to_extra = (
+                self.item_Extraturn and length(x - self.item_Extraturn.pos()[0], y - self.item_Extraturn.pos()[1]) <= 16
+            )
+
+            # --- Check 3: overlap with StopCoin item ---
+            too_close_to_stop = (
+                self.item_StopCoin and length(x - self.item_StopCoin.pos()[0], y - self.item_StopCoin.pos()[1]) <= 16
+            )
+
+            # If everything passes, spawn the item
+            if not (too_close_to_treasure or too_close_to_extra or too_close_to_stop):
+                self.item_ReDirect = item_ReDirect(r, c)
+                return
+
+    # ---------------------------
     def start_round(self, starting_player=0):
         self.turn = starting_player
         self.message = f"Round start: Player {self.turn+1}'s turn"
         self.awaiting_switch = False
         self.extra_turn = False
+        
 
         # Reset coins
         self.coins[0].x, self.coins[0].y = MARGIN + 20, HEIGHT // 2
@@ -211,12 +388,19 @@ class Game:
 
         # Spawn treasure
         candidate_cells = [(r, c) for r in range(1, 4) for c in range(3, 6)]
-        candidate_cells = [(r, c) for (r, c) in candidate_cells
-                           if not self._cell_center_blocked(r, c)]
+        candidate_cells = [(r, c) for (r, c) in candidate_cells if not self._cell_center_blocked(r, c)]
         self.treasures = []
         if candidate_cells:
             r, c = random.choice(candidate_cells)
-            self.treasures.append(Treasure(r, c, None))
+            self.treasures.append(Treasure(row=r, col=c, carried_by=None))
+
+        # Spawn items
+        self.spawn_item_Extraturn()
+        self.spawn_item_StopCoin()
+        self.spawn_item_ReDirect()
+
+
+       
 
     # ---------------------------
     def any_moving(self):
@@ -273,9 +457,12 @@ class Game:
 
     # ---------------------------
     def update_logic(self):
-        if self.match_over: return
+        if self.match_over: 
+        
+            return
         for c in self.coins: c.update(self.obstacles)
         self.resolve_coin_collision(self.coins[0], self.coins[1])
+        
 
         # Pickup
         for i, c in enumerate(self.coins):
@@ -289,6 +476,41 @@ class Game:
                             self.message = f"P{i+1} picked treasure! (+extra turn)"
                             break
 
+        # Check for item pickup
+        if self.item_Extraturn:
+            for i, c in enumerate(self.coins):
+                if c.carrying is None:
+                    item_x, item_y = self.item_Extraturn.pos()
+                    if length(c.x - item_x, c.y - item_y) <= c.r + 12:
+                        self.item_Extraturn = None  # Remove the item from the map
+                        self.extra_turn = True
+                        self.message = f"P{i+1} picked up the item! (+extra turn)"
+                        break
+
+        if self.item_StopCoin:
+            for i, c in enumerate(self.coins):
+                if c.carrying is None:
+                    item_x, item_y = self.item_StopCoin.pos()
+                    if length(c.x - item_x, c.y - item_y) <= c.r + 12:
+                        self.item_StopCoin = None  # Remove the item from the map
+                        c.vx = 0  # Set the velocity in the x direction to 0
+                        c.vy = 0  # Set the velocity in the y direction to 0
+                        c.resting = True
+                        self.message = f"P{i+1} picked up the item! (+stop moving)"
+                        break
+
+        if self.item_ReDirect:
+            for i, c in enumerate(self.coins):
+                if c.carrying is None:
+                    item_x, item_y = self.item_ReDirect.pos()
+                    if length(c.x - item_x, c.y - item_y) <= c.r + 12:
+                        self.item_ReDirect = None  # Remove the item from the map
+                        c.vx = random.uniform(5, 7) * (1 if self.turn == 0 else -1)
+                        c.vy = random.uniform(-2, 2)
+                        c.resting = True
+                        self.message = f"P{i+1} picked up the item! (+re directing)"
+                        break
+
         # Steal
         attacker = self.coins[self.turn]
         defender = self.coins[self.other(self.turn)]
@@ -298,6 +520,8 @@ class Game:
                 if attacker.carrying: attacker.carrying.carried_by = self.turn
                 self.extra_turn = True
                 self.message = f"P{self.turn+1} stole! (+extra turn)"
+
+        
 
         # Scoring
         for i, c in enumerate(self.coins):
@@ -310,8 +534,11 @@ class Game:
                     self.match_over = True
                     self.awaiting_switch = False
                     self.message = f"P{i+1} WINS THE MATCH! Press R to restart."
-                else: self.start_round(starting_player=i)
+                else: self.start_round(starting_player=self.other(i))
+
                 return
+
+
 
         # Turn switch
         if not self.any_moving() and self.awaiting_switch and not self.dragging:
@@ -325,12 +552,18 @@ class Game:
 
     # ---------------------------
     def draw(self):
-        self.screen.fill(BG)
+        self.screen.blit(self.bg_img, (0, 0))
         self.draw_grid(self.screen)
         self.draw_bases(self.screen)
         for r in self.obstacles:
             pygame.draw.rect(self.screen, OBSTACLE_C, r, border_radius=6)
         self.draw_treasures(self.screen)
+        if self.item_Extraturn:
+            self.item_Extraturn.draw(self.screen)  # Draw the item
+        if self.item_StopCoin:
+            self.item_StopCoin.draw(self.screen)
+        if self.item_ReDirect:
+            self.item_ReDirect.draw(self.screen)
         for c in self.coins: c.draw(self.screen)
         if self.dragging:
             coin = self.coins[self.turn]
@@ -339,7 +572,6 @@ class Game:
         self.draw_hud(self.screen)
         pygame.display.flip()
 
-    # ---------------------------
     def draw_grid(self, surf):
         for r in range(GRID_ROWS + 1):
             y = MARGIN + r * CELL
@@ -359,8 +591,9 @@ class Game:
             else:
                 c = self.coins[t.carried_by]
                 x, y = c.x, c.y
-            pygame.draw.circle(surf, TREASURE_COLOR, (int(x), int(y)), 8)
-            pygame.draw.circle(surf, (80,60,0), (int(x), int(y)), 8, 2)
+            rect = self.treasure_img.get_rect(center=(int(x), int(y)))
+            surf.blit(self.treasure_img, rect)
+
 
     def draw_hud(self, surf):
         txt = f"Match Wins P1:{self.match_wins[0]} P2:{self.match_wins[1]} (Best of 3)"
@@ -381,6 +614,10 @@ class Game:
                 self.start_round(starting_player=random.choice([0, 1]))
             elif e.key == pygame.K_ESCAPE:
                 pygame.event.post(pygame.event.Event(pygame.QUIT))
+            elif e.key == pygame.K_m:
+                pygame.quit()                       
+                os.system("python main.py")      
+                raise SystemExit 
 
     def run(self):
         while True:
