@@ -7,6 +7,8 @@ import math
 import os
 import json
 from dataclasses import dataclass
+pygame.init()
+pygame.mixer.init()
 
 # ---------------------------
 # CONFIG
@@ -36,6 +38,8 @@ P1_COLOR = (230, 90, 80)   # just identity, coin uses texture
 P2_COLOR = (90, 180, 230)
 
 MAP_FOLDER = "maps"  # folder where pre-made maps are stored
+
+itemsound = pygame.mixer.Sound("sounds/itemcollect.mp3")
 
 # ---------------------------
 # Helpers
@@ -210,6 +214,11 @@ class Game:
         self.extra_img = pygame.transform.smoothscale(extra_raw, (40, 40))
         self.stop_img = pygame.transform.smoothscale(stop_raw, (40, 40))
         self.redirect_img = pygame.transform.smoothscale(redirect_raw, (40, 40))
+
+        # sounds
+        bgm = pygame.mixer.Sound('sounds/bgm.mp3')
+        bgm.set_volume(0.19)
+        bgm.play(-1)
 
         # wall texture
         wall_raw = pygame.image.load("assets/wall.png").convert_alpha()
@@ -489,6 +498,7 @@ class Game:
         b.vy += impulse_y
 
     # ---------------------------
+        # ---------------------------
     def update_logic(self):
         if self.match_over:
             return
@@ -500,11 +510,13 @@ class Game:
         for c in self.coins:
             c.update(self.obstacles)
 
-        # 2. ITEM PICKUP (using saved last positions)
+
+        # 2. ITEM PICKUP (before collision pushes coins)
         self.check_item_pickup(last_positions)
 
         # 3. COLLISION
         self.resolve_coin_collision(self.coins[0], self.coins[1])
+
 
         # 4. Treasure pickup
         for i, c in enumerate(self.coins):
@@ -555,10 +567,10 @@ class Game:
                 self.message = f"Turn: Player {self.turn+1}"
             self.awaiting_switch = False
 
+
     # ---------------------------
+        # ---------------------------
     def check_item_pickup(self, last_positions):
-        """Ensure item effects go ONLY to the coin that actually moved into the item."""
-        # (name, attribute_name)
         items = [
             ("extra", "item_Extraturn"),
             ("stop", "item_StopCoin"),
@@ -573,33 +585,40 @@ class Game:
             ix, iy = item.pos()
 
             touched = []
-            for p in [0, 1]:
-                coin = self.coins[p]
-                bx, by = last_positions[p]   # last frame position
-                ax, ay = coin.x, coin.y      # current position
 
-                d_last = length(bx - ix, by - iy)
+            # check which coin ENTERED the pickup radius
+            for p, coin in enumerate(self.coins):
+                bx, by = last_positions[p]     # last frame
+                ax, ay = coin.x, coin.y        # this frame
+
+                d_before = length(bx - ix, by - iy)
                 d_now = length(ax - ix, ay - iy)
 
-                # coin moved from outside → inside radius this frame
-                if d_last > coin.r + 12 and d_now <= coin.r + 12:
+                # must cross into radius
+                if d_before > coin.r + 12 and d_now <= coin.r + 12:
                     touched.append(p)
 
             if not touched:
                 continue
 
-            # Remove item immediately so second coin can't also get it
-            setattr(self, attr, None)
-
+            # the first coin that entered the zone this frame
             player = touched[0]
             c = self.coins[player]
 
+            # remove item
+            setattr(self, attr, None)
+
+            # apply effect
             if name == "extra":
                 self.extra_turn = True
                 self.message = f"P{player+1} picked +Extra Turn!"
+                itemsound.set_volume(0.19)
+                itemsound.play()
+                
 
             elif name == "stop":
-                c.vx = c.vy = 0
+                c.vx = 0
+                c.vy = 0
                 c.resting = True
                 self.message = f"P{player+1} picked +Stop Coin!"
 
@@ -609,6 +628,8 @@ class Game:
                 c.resting = False
                 self.awaiting_switch = True
                 self.message = f"P{player+1} picked +Redirect!"
+
+
 
     # ---------------------------
     def draw(self):
