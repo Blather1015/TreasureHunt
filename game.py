@@ -186,6 +186,7 @@ class Game:
         self.coin_red_img = pygame.image.load("assets/coin_red.png").convert_alpha()
         self.coin_blue_img = pygame.image.load("assets/coin_blue.png").convert_alpha()
         self.treasure_img = pygame.image.load("assets/treasure.png").convert_alpha()
+        self.ExtraTurn_img = pygame.image.load("assets/ExtraTurn.png").convert_alpha()
         #self.wall_img = pygame.image.load("assets/wall.png").convert_alpha()
 
         base_h = 3 * CELL

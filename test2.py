@@ -377,7 +377,7 @@ class Game:
             if e.key == pygame.K_r:
                 self.match_wins = [0, 0]
                 self.match_over = False
-                self.obstacles = self.load_random_map()
+                self.obstacles = self.load_random_7map()
                 self.start_round(starting_player=random.choice([0, 1]))
             elif e.key == pygame.K_ESCAPE:
                 pygame.event.post(pygame.event.Event(pygame.QUIT))
