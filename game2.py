@@ -7,6 +7,7 @@ import math
 import os
 import json
 from dataclasses import dataclass
+
 pygame.init()
 pygame.mixer.init()
 
@@ -39,6 +40,7 @@ P2_COLOR = (90, 180, 230)
 
 MAP_FOLDER = "maps"  # folder where pre-made maps are stored
 
+# sounds
 itemsound = pygame.mixer.Sound("sounds/itemcollect.mp3")
 bouncesound = pygame.mixer.Sound("sounds/bounce.mp3")
 FreezeItemSound = pygame.mixer.Sound("sounds/freeze.mp3")
@@ -53,6 +55,20 @@ def grid_to_px(r, c):
 
 def length(vx, vy):
     return math.hypot(vx, vy)
+
+# distance from point to segment
+def dist_point_to_segment(px, py, x1, y1, x2, y2):
+    # handle degenerate segment
+    dx = x2 - x1
+    dy = y2 - y1
+    if dx == 0 and dy == 0:
+        return length(px - x1, py - y1)
+
+    t = ((px - x1) * dx + (py - y1) * dy) / (dx * dx + dy * dy)
+    t = max(0.0, min(1.0, t))
+    proj_x = x1 + t * dx
+    proj_y = y1 + t * dy
+    return length(px - proj_x, py - proj_y)
 
 # ---------------------------
 # Entities
@@ -200,7 +216,7 @@ class Game:
     def __init__(self):
         pygame.init()
         self.screen = pygame.display.set_mode((WIDTH, HEIGHT))
-        pygame.display.set_caption("Treasure Hunt - Game")
+        pygame.display.set_caption("Treasure Flick (Single Player)")
         self.clock = pygame.time.Clock()
         self.font = pygame.font.SysFont("arial", 22)
         self.bigfont = pygame.font.SysFont("arial", 36, bold=True)
@@ -227,8 +243,7 @@ class Game:
         self.stop_img = pygame.transform.smoothscale(stop_raw, (40, 40))
         self.redirect_img = pygame.transform.smoothscale(redirect_raw, (40, 40))
 
-        # sounds
-        
+     
 
         # wall texture
         wall_raw = pygame.image.load("assets/wall.png").convert_alpha()
@@ -245,20 +260,25 @@ class Game:
         p1_start = (MARGIN + 20, HEIGHT // 2)
         p2_start = (WIDTH - MARGIN - 20, HEIGHT // 2)
         self.coins = [
-            Coin(*p1_start, P1_COLOR, self.coin_red_img, self.coin_blue_img),
-            Coin(*p2_start, P2_COLOR, self.coin_red_img, self.coin_blue_img),
+            Coin(*p1_start, P1_COLOR, self.coin_red_img, self.coin_blue_img),  # Player
+            Coin(*p2_start, P2_COLOR, self.coin_red_img, self.coin_blue_img),  # AI
         ]
 
         self.match_wins = [0, 0]
-        self.turn = 0
+        self.turn = 0  # 0 = human (red), 1 = AI (blue)
         self.extra_turn = False
         self.awaiting_switch = False
         self.dragging = False
         self.drag_start = (0, 0)
         self.treasures: list[Treasure] = []
         self.match_over = False
-        self.message = "Flip: P1 starts!"
+        self.message = "Flip: Player starts!"
         self.randomDirect = True
+
+        # AI state
+        self.ai_index = 1
+        self.ai_thinking = False
+        self.ai_think_until = 0  # ms timestamp
 
         # Initialize first map (only changes on R)
         self.obstacles = self.load_random_map()
@@ -413,6 +433,10 @@ class Game:
         self.awaiting_switch = False
         self.extra_turn = False
 
+        # reset AI thinking
+        self.ai_thinking = False
+        self.ai_think_until = 0
+
         # Reset coins
         self.coins[0].x, self.coins[0].y = MARGIN + 20, HEIGHT // 2
         self.coins[1].x, self.coins[1].y = WIDTH - MARGIN - 20, HEIGHT // 2
@@ -448,9 +472,15 @@ class Game:
     def other(self, p):
         return 1 - p
 
+    # ---------------------------
+    # Player input (only for human / red)
+    # ---------------------------
     def handle_shot_input(self, events):
         if self.awaiting_switch or self.match_over:
             return
+        if self.turn != 0:
+            return  # only human controls red
+
         coin = self.coins[self.turn]
         if not coin.resting:
             return
@@ -474,14 +504,16 @@ class Game:
                     coin.vy = vy * scale
                     coin.resting = False
                     self.awaiting_switch = True
-                    self.message = f"P{self.turn+1} shot!"
+                    self.message = f"Player shot!"
             elif e.type == pygame.KEYDOWN and e.key == pygame.K_SPACE and coin.resting:
-                coin.vx = random.uniform(5, 7) * (1 if self.turn == 0 else -1)
+                coin.vx = random.uniform(5, 7)
                 coin.vy = random.uniform(-2, 2)
                 coin.resting = False
                 self.awaiting_switch = True
-                self.message = f"P{self.turn+1} shot!"
+                self.message = f"Player nudge!"
 
+    # ---------------------------
+    # Physics for coins
     # ---------------------------
     def resolve_coin_collision(self, a, b):
         dx, dy = b.x - a.x, b.y - a.y
@@ -508,10 +540,198 @@ class Game:
         b.vy += impulse_y
 
     # ---------------------------
-        # ---------------------------
+    # AI helpers
+    # ---------------------------
+    def line_hits_wall(self, x1, y1, x2, y2):
+        """Check if a line from (x1,y1) to (x2,y2) intersects any obstacle."""
+        for rect in self.obstacles:
+            if rect.clipline((x1, y1), (x2, y2)):
+                return True
+        return False
+
+    def predict_future_position(self, x, y, vx, vy, frames=40):
+        """Predict position 'frames' frames (~0.3s at 120fps) into the future."""
+        return x + vx * frames, y + vy * frames
+
+    def choose_ai_target(self):
+        """Returns (tx, ty, mode) where mode in {'score','attack','treasure'}."""
+        player = self.coins[0]
+        ai_coin = self.coins[1]
+
+        # 1) if AI carries treasure -> go to blue base
+        for t in self.treasures:
+            if t.carried_by == self.ai_index:
+                base = self.bases[self.ai_index].rect
+                return base.centerx, base.centery, "score"
+
+        # 2) if Player carries treasure -> attack player (with prediction)
+        for t in self.treasures:
+            if t.carried_by == 0:
+                # predict player movement
+                tx, ty = self.predict_future_position(
+                    player.x, player.y, player.vx, player.vy
+                )
+                return tx, ty, "attack"
+
+        # 3) free treasure -> go for nearest
+        free_treasures = [t for t in self.treasures if t.carried_by is None]
+        if free_treasures:
+            best = None
+            best_dist = None
+            for t in free_treasures:
+                tx, ty = t.pos()
+                d = length(ai_coin.x - tx, ai_coin.y - ty)
+                if best is None or d < best_dist:
+                    best = t
+                    best_dist = d
+            tx, ty = best.pos()
+            return tx, ty, "treasure"
+
+        # 4) fallback: just attack player
+        return player.x, player.y, "attack"
+
+    def adjust_target_for_walls(self, sx, sy, tx, ty):
+        """If straight line blocked, pick a detour near target."""
+        if not self.line_hits_wall(sx, sy, tx, ty):
+            return tx, ty
+
+        # try angles around target
+        angles = [ 45, -45, 90, -90, 135, -135,-180,180]
+        random.shuffle(angles)
+        radius = 140
+
+        for ang in angles:
+            rad = math.radians(ang)
+            ox = math.cos(rad) * radius
+            oy = math.sin(rad) * radius
+            detour_x = tx + ox
+            detour_y = ty + oy
+            # keep inside board a bit
+            if (MARGIN < detour_x < WIDTH - MARGIN and
+                MARGIN < detour_y < HEIGHT - MARGIN and
+                not self.line_hits_wall(sx, sy, detour_x, detour_y)):
+                return detour_x, detour_y
+
+        # if all fail, just use original
+        return tx, ty
+
+    def adjust_target_to_avoid_player(self, sx, sy, tx, ty):
+        """If line passes too near player, shift target sideways."""
+        player = self.coins[0]
+        px, py = player.x, player.y
+
+        # distance from player to line segment
+        d = dist_point_to_segment(px, py, sx, sy, tx, ty)
+        if d > player.r + 8:
+            return tx, ty  # safe
+
+        # try offset directions
+        offset = 80
+        candidates = [
+            (tx + offset, ty),
+            (tx - offset, ty),
+            (tx, ty + offset),
+            (tx, ty - offset),
+        ]
+        for cx, cy in candidates:
+            dd = dist_point_to_segment(px, py, sx, sy, cx, cy)
+            if dd > player.r + 12 and not self.line_hits_wall(sx, sy, cx, cy):
+                return cx, cy
+
+        return tx, ty
+
+    def update_ai(self):
+        """AI thinking + shooting logic (called every frame when it's AI's turn)."""
+        if self.match_over:
+            return
+        if self.turn != self.ai_index:
+            # ensure we reset thinking when it's not AI's turn
+            self.ai_thinking = False
+            return
+        if self.awaiting_switch:
+            return
+
+        ai_coin = self.coins[self.ai_index]
+
+        # If AI coin is still moving, don't think or shoot
+        if not ai_coin.resting:
+            return
+
+        now = pygame.time.get_ticks()
+
+        # Start thinking
+        if not self.ai_thinking:
+            self.ai_thinking = True
+            self.ai_think_until = now + random.randint(1000, 2000)  # 2–3 seconds
+            self.message = "AI is thinking..."
+            return
+
+        # Still thinking
+        if now < self.ai_think_until:
+            return
+
+        # Done thinking -> decide and shoot
+        self.ai_thinking = False
+
+        # choose target
+        target_x, target_y, mode = self.choose_ai_target()
+
+        # pathfinding: avoid walls
+        target_x, target_y = self.adjust_target_for_walls(
+            ai_coin.x, ai_coin.y, target_x, target_y
+        )
+
+        # if not actively attacking, avoid player collisions
+        if mode != "attack":
+            target_x, target_y = self.adjust_target_to_avoid_player(
+                ai_coin.x, ai_coin.y, target_x, target_y
+            )
+
+        # compute velocity towards final target
+        dx = target_x - ai_coin.x
+        dy = target_y - ai_coin.y
+        dist = length(dx, dy)
+        if dist < 1.0:
+            # random small nudge to avoid zero-distance
+            dx = random.uniform(-1, 1)
+            dy = random.uniform(-0.5, 0.5)
+            dist = length(dx, dy)
+
+        # choose power based on distance
+        base_power = min(MAX_SHOT_POWER, dist / 15.0)
+        if mode == "attack":
+            power = min(MAX_SHOT_POWER, base_power + 2.0)
+        elif mode == "score":
+            power = base_power
+        else:  # treasure
+            power = base_power
+
+        if dist > 0:
+            vx = dx / dist * power
+            vy = dy / dist * power
+        else:
+            vx = vy = 0
+
+        ai_coin.vx = vx
+        ai_coin.vy = vy
+        ai_coin.resting = False
+        self.awaiting_switch = True
+
+        if mode == "attack":
+            self.message = "AI attacks!"
+        elif mode == "score":
+            self.message = "AI is going to base!"
+        else:
+            self.message = "AI goes for treasure!"
+
+    # ---------------------------
     def update_logic(self):
         if self.match_over:
             return
+
+        # --- AI decision BEFORE movement ---
+        if self.turn == self.ai_index:
+            self.update_ai()
 
         # --- SAVE LAST POSITIONS BEFORE MOVING ---
         last_positions = [(c.x, c.y) for c in self.coins]
@@ -520,13 +740,11 @@ class Game:
         for c in self.coins:
             c.update(self.obstacles)
 
-
         # 2. ITEM PICKUP (before collision pushes coins)
         self.check_item_pickup(last_positions)
 
         # 3. COLLISION
         self.resolve_coin_collision(self.coins[0], self.coins[1])
-
 
         # 4. Treasure pickup
         for i, c in enumerate(self.coins):
@@ -539,7 +757,10 @@ class Game:
                             t.carried_by = i
                             self.extra_turn = True
                             getTreasureSound.play()
-                            self.message = f"P{i+1} picked treasure! (+extra turn)"
+                            if i == 0:
+                                self.message = f"Player picked treasure! (+extra turn)"
+                            else:
+                                self.message = f"AI picked treasure! (+extra turn)"
                             break
 
         # 5. Steal
@@ -550,20 +771,24 @@ class Game:
                 attacker.carrying, defender.carrying = defender.carrying, None
                 attacker.carrying.carried_by = self.turn
                 self.extra_turn = True
-                self.message = f"P{self.turn+1} stole! (+extra turn)"
+                if self.turn == 0:
+                    self.message = "Player stole! (+extra turn)"
+                else:
+                    self.message = "AI stole! (+extra turn)"
 
         # 6. Scoring
         for i, c in enumerate(self.coins):
             if c.carrying is not None and self.bases[i].rect.collidepoint(c.x, c.y):
                 self.match_wins[i] += 1
-                self.message = f"P{i+1} scored! Match {self.match_wins[0]}-{self.match_wins[1]}"
+                who = "Player" if i == 0 else "AI"
+                self.message = f"{who} scored! Match {self.match_wins[0]}-{self.match_wins[1]}"
                 if c.carrying in self.treasures:
                     self.treasures.remove(c.carrying)
                 c.carrying = None
                 if self.match_wins[i] >= ROUNDS_TO_WIN:
                     self.match_over = True
                     self.awaiting_switch = False
-                    self.message = f"P{i+1} WINS THE MATCH! Press R to restart."
+                    self.message = f"{who} WINS THE MATCH! Press R to restart."
                 else:
                     self.start_round(starting_player=self.other(i))
                 return
@@ -572,15 +797,22 @@ class Game:
         if not self.any_moving() and self.awaiting_switch and not self.dragging:
             if self.extra_turn:
                 self.extra_turn = False
-                self.message = f"P{self.turn+1} extra turn!"
+                if self.turn == 0:
+                    self.message = "Player extra turn!"
+                else:
+                    self.message = "AI extra turn!"
             else:
                 self.turn = self.other(self.turn)
-                self.message = f"Turn: Player {self.turn+1}"
+                if self.turn == 0:
+                    self.message = "Turn: Player"
+                else:
+                    self.message = "Turn: AI"
             self.awaiting_switch = False
-
+            # reset AI thinking when turn changes
+            if self.turn != self.ai_index:
+                self.ai_thinking = False
 
     # ---------------------------
-        # ---------------------------
     def check_item_pickup(self, last_positions):
         items = [
             ("extra", "item_Extraturn"),
@@ -613,8 +845,8 @@ class Game:
                 continue
 
             # the first coin that entered the zone this frame
-            player = touched[0]
-            c = self.coins[player]
+            player_idx = touched[0]
+            c = self.coins[player_idx]
 
             # remove item
             setattr(self, attr, None)
@@ -622,29 +854,29 @@ class Game:
             # apply effect
             if name == "extra":
                 self.extra_turn = True
-                self.message = f"P{player+1} picked Extra Turn!"
+                who = "Player" if player_idx == 0 else "AI"
+                self.message = f"{who} picked +Extra Turn!"
                 itemsound.set_volume(0.19)
                 itemsound.play()
-                
 
             elif name == "stop":
                 c.vx = 0
                 c.vy = 0
                 c.resting = True
-                self.message = f"P{player+1} picked Icecube!"
+                who = "Player" if player_idx == 0 else "AI"
+                self.message = f"{who} picked +Stop Coin!"
                 FreezeItemSound.set_volume(0.2)
                 FreezeItemSound.play()
 
             elif name == "redirect":
-                c.vx = random.uniform(5, 7) * (1 if player == 0 else -1)
+                c.vx = random.uniform(5, 7) * (1 if player_idx == 0 else -1)
                 c.vy = random.uniform(-2, 2)
                 c.resting = False
                 self.awaiting_switch = True
-                self.message = f"P{player+1} picked Whirlpool!"
+                who = "Player" if player_idx == 0 else "AI"
+                self.message = f"{who} picked +Redirect!"
                 whirlpoolItemSound.set_volume(0.2)
                 whirlpoolItemSound.play()
-
-
 
     # ---------------------------
     def draw(self):
@@ -675,8 +907,8 @@ class Game:
         for c in self.coins:
             c.draw(self.screen)
 
-        # aiming line
-        if self.dragging:
+        # aiming line for player
+        if self.dragging and self.turn == 0:
             coin = self.coins[self.turn]
             mouse = pygame.mouse.get_pos()
             pygame.draw.line(self.screen, (255, 255, 255),
@@ -708,13 +940,14 @@ class Game:
             surf.blit(self.treasure_img, rect)
 
     def draw_hud(self, surf):
-        txt = f"Match Wins P1:{self.match_wins[0]} P2:{self.match_wins[1]} (Best of 3)"
+        txt = f"Wins - Player:{self.match_wins[0]}  AI:{self.match_wins[1]} (Best of 3)"
         surf.blit(self.font.render(txt, True, TEXT), (MARGIN, 8))
-        t = self.font.render(f"Turn: Player {self.turn+1}", True, TEXT)
+        turn_text = "Player" if self.turn == 0 else "AI"
+        t = self.font.render(f"Turn: {turn_text}", True, TEXT)
         surf.blit(t, (WIDTH - t.get_width() - MARGIN, 8))
         m = self.font.render(self.message, True, TEXT)
         surf.blit(m, (MARGIN, HEIGHT - m.get_height() - 8))
-        help1 = self.font.render("Drag to flick. SPACE=nudge. R=reset. ESC=quit. M=menu",
+        help1 = self.font.render("Drag to flick (Player). SPACE=nudge. R=reset. ESC=quit. M=menu",
                                  True, (200, 210, 230))
         surf.blit(help1, (MARGIN, HEIGHT - m.get_height() - 34))
 
@@ -742,7 +975,10 @@ class Game:
                     pygame.quit()
                     raise SystemExit
                 self.handle_global_keys(e)
+
+            # Only player controlled by mouse/keyboard is red (index 0)
             self.handle_shot_input(events)
+
             self.update_logic()
             self.draw()
 
