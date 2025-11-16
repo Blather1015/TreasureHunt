@@ -216,7 +216,7 @@ class Game:
     def __init__(self):
         pygame.init()
         self.screen = pygame.display.set_mode((WIDTH, HEIGHT))
-        pygame.display.set_caption("Treasure Flick (Single Player)")
+        pygame.display.set_caption("Treasure Hunt (Single Player)")
         self.clock = pygame.time.Clock()
         self.font = pygame.font.SysFont("arial", 22)
         self.bigfont = pygame.font.SysFont("arial", 36, bold=True)
