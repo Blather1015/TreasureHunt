@@ -54,7 +54,7 @@ def how_to_play_screen():
         "- Collect the treasure and bring it to your base.",
         "- Items:",
         "    +1: Extra Turn",
-        "    Ice cube: Freeze your coin",
+        "    Ice cube: Freeze your ship",
         "    Whirlpool: Random redirect",
         "",
         "Press ESC or click BACK to go back."
